@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import itertools
 import pickle
 import imageio
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,11 +11,14 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.autograd import Variable
 
-# G(z)
-class generator(nn.Module):
+
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+
+class Generator(nn.Module):
     # initializers
     def __init__(self, d=128):
-        super(generator, self).__init__()
+        super(Generator, self).__init__()
         self.deconv1 = nn.ConvTranspose2d(100, d*8, 4, 1, 0)
         self.deconv1_bn = nn.BatchNorm2d(d*8)
         self.deconv2 = nn.ConvTranspose2d(d*8, d*4, 4, 2, 1)
@@ -41,10 +45,11 @@ class generator(nn.Module):
 
         return x
 
-class discriminator(nn.Module):
+
+class Discriminator(nn.Module):
     # initializers
     def __init__(self, d=128):
-        super(discriminator, self).__init__()
+        super(Discriminator, self).__init__()
         self.conv1 = nn.Conv2d(1, d, 4, 2, 1)
         self.conv2 = nn.Conv2d(d, d*2, 4, 2, 1)
         self.conv2_bn = nn.BatchNorm2d(d*2)
@@ -69,22 +74,23 @@ class discriminator(nn.Module):
 
         return x
 
+
 def normal_init(m, mean, std):
     if isinstance(m, nn.ConvTranspose2d) or isinstance(m, nn.Conv2d):
         m.weight.data.normal_(mean, std)
         m.bias.data.zero_()
 
-fixed_z_ = torch.randn((5 * 5, 100)).view(-1, 100, 1, 1)    # fixed noise
-fixed_z_ = Variable(fixed_z_.cuda(), volatile=True)
+
+fixed_z_ = torch.randn((5 * 5, 100)).view(-1, 100, 1, 1).to(device)    # fixed noise
 def show_result(num_epoch, show = False, save = False, path = 'result.png', isFix=False):
-    z_ = torch.randn((5*5, 100)).view(-1, 100, 1, 1)
-    z_ = Variable(z_.cuda(), volatile=True)
+    z = torch.randn((5*5, 100)).view(-1, 100, 1, 1).to(device)
+    z = Variable(z, volatile=True)
 
     G.eval()
     if isFix:
         test_images = G(fixed_z_)
     else:
-        test_images = G(z_)
+        test_images = G(z)
     G.train()
 
     size_figure_grid = 5
@@ -107,6 +113,7 @@ def show_result(num_epoch, show = False, save = False, path = 'result.png', isFi
         plt.show()
     else:
         plt.close()
+
 
 def show_train_hist(hist, show = False, save = False, path = 'Train_hist.png'):
     x = range(len(hist['D_losses']))
@@ -132,6 +139,7 @@ def show_train_hist(hist, show = False, save = False, path = 'Train_hist.png'):
     else:
         plt.close()
 
+
 # training parameters
 batch_size = 128
 lr = 0.0002
@@ -140,21 +148,23 @@ train_epoch = 20
 # data_loader
 img_size = 64
 transform = transforms.Compose([
-        transforms.Scale(img_size),
+        transforms.Resize((img_size, img_size)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+        transforms.Normalize(mean=0.5, std=0.5)
 ])
+
 train_loader = torch.utils.data.DataLoader(
     datasets.MNIST('data', train=True, download=True, transform=transform),
     batch_size=batch_size, shuffle=True)
 
+
 # network
-G = generator(128)
-D = discriminator(128)
+G = Generator(128)
+D = Discriminator(128)
 G.weight_init(mean=0.0, std=0.02)
 D.weight_init(mean=0.0, std=0.02)
-G.cuda()
-D.cuda()
+G.to(device)
+D.to(device)
 
 # Binary Cross Entropy loss
 BCE_loss = nn.BCELoss()
@@ -184,25 +194,24 @@ for epoch in range(train_epoch):
     D_losses = []
     G_losses = []
     epoch_start_time = time.time()
-    for x_, _ in train_loader:
+    for x, _ in train_loader:
         # train discriminator D
         D.zero_grad()
 
-        mini_batch = x_.size()[0]
+        mini_batch = x.size()[0]
 
-        y_real_ = torch.ones(mini_batch)
-        y_fake_ = torch.zeros(mini_batch)
+        y_real = torch.ones(mini_batch).to(device)
+        y_fake = torch.zeros(mini_batch).to(device)
+        x = x.to(device)
 
-        x_, y_real_, y_fake_ = Variable(x_.cuda()), Variable(y_real_.cuda()), Variable(y_fake_.cuda())
-        D_result = D(x_).squeeze()
-        D_real_loss = BCE_loss(D_result, y_real_)
+        D_result = D(x).squeeze()
+        D_real_loss = BCE_loss(D_result, y_real)
 
-        z_ = torch.randn((mini_batch, 100)).view(-1, 100, 1, 1)
-        z_ = Variable(z_.cuda())
-        G_result = G(z_)
+        z = torch.randn((mini_batch, 100)).view(-1, 100, 1, 1).to(device)
+        G_result = G(z)
 
         D_result = D(G_result).squeeze()
-        D_fake_loss = BCE_loss(D_result, y_fake_)
+        D_fake_loss = BCE_loss(D_result, y_fake)
         D_fake_score = D_result.data.mean()
 
         D_train_loss = D_real_loss + D_fake_loss
@@ -210,33 +219,32 @@ for epoch in range(train_epoch):
         D_train_loss.backward()
         D_optimizer.step()
 
-        # D_losses.append(D_train_loss.data[0])
-        D_losses.append(D_train_loss.data[0])
+        D_losses.append(D_train_loss.data.item())
 
         # train generator G
         G.zero_grad()
 
-        z_ = torch.randn((mini_batch, 100)).view(-1, 100, 1, 1)
-        z_ = Variable(z_.cuda())
+        z = torch.randn((mini_batch, 100)).view(-1, 100, 1, 1)
+        z = Variable(z.to(device))
 
-        G_result = G(z_)
+        G_result = G(z)
         D_result = D(G_result).squeeze()
-        G_train_loss = BCE_loss(D_result, y_real_)
+        G_train_loss = BCE_loss(D_result, y_real)
         G_train_loss.backward()
         G_optimizer.step()
 
-        G_losses.append(G_train_loss.data[0])
+        G_losses.append(G_train_loss.data.item())
 
         num_iter += 1
 
     epoch_end_time = time.time()
     per_epoch_ptime = epoch_end_time - epoch_start_time
 
-
-    print('[%d/%d] - ptime: %.2f, loss_d: %.3f, loss_g: %.3f' % ((epoch + 1), train_epoch, per_epoch_ptime, torch.mean(torch.FloatTensor(D_losses)),
-                                                              torch.mean(torch.FloatTensor(G_losses))))
-    p = 'MNIST_DCGAN_results/Random_results/MNIST_DCGAN_' + str(epoch + 1) + '.png'
-    fixed_p = 'MNIST_DCGAN_results/Fixed_results/MNIST_DCGAN_' + str(epoch + 1) + '.png'
+    loss_d = np.mean(D_losses)
+    loss_g = np.mean(G_losses)
+    print(f'[{epoch + 1}/{train_epoch}] - ptime: {per_epoch_ptime:.2f}, loss_d: {loss_d:.3f}, loss_g: {loss_g:.3f}')
+    p = f'MNIST_DCGAN_results/Random_results/MNIST_DCGAN_{epoch+1}.png'
+    fixed_p = f'MNIST_DCGAN_results/Fixed_results/MNIST_DCGAN_{epoch+1}.png'
     show_result((epoch+1), save=True, path=p, isFix=False)
     show_result((epoch+1), save=True, path=fixed_p, isFix=True)
     train_hist['D_losses'].append(torch.mean(torch.FloatTensor(D_losses)))
@@ -259,5 +267,5 @@ show_train_hist(train_hist, save=True, path='MNIST_DCGAN_results/MNIST_DCGAN_tra
 images = []
 for e in range(train_epoch):
     img_name = 'MNIST_DCGAN_results/Fixed_results/MNIST_DCGAN_' + str(e + 1) + '.png'
-    images.append(imageio.imread(img_name))
+    images.append(imageio.v2.imread(img_name))
 imageio.mimsave('MNIST_DCGAN_results/generation_animation.gif', images, fps=5)
